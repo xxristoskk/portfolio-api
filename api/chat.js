@@ -1,11 +1,6 @@
-const express = require('express');
-const cors = require('cors');
 const axios = require('axios');
-require('dotenv').config();
 
-const app = express();
-
-// Rate limiting configuration
+// Simple rate limiting
 const rateLimit = {
   windowMs: 15 * 60 * 1000, // 15 minutes
   max: 100 // limit each IP to 100 requests per windowMs
@@ -14,10 +9,9 @@ const rateLimit = {
 let requestCounts = new Map();
 let lastCleanup = Date.now();
 
-// Simple rate limiting middleware
-const rateLimiter = (req, res, next) => {
+// Rate limiting check
+const checkRateLimit = (ip) => {
   const now = Date.now();
-  const ip = req.ip;
   
   // Cleanup old entries every hour
   if (now - lastCleanup > 3600000) {
@@ -33,37 +27,36 @@ const rateLimiter = (req, res, next) => {
   }
 
   if (userRequests.count >= rateLimit.max) {
-    return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+    return false;
   }
 
   userRequests.count++;
   requestCounts.set(ip, userRequests);
-  next();
+  return true;
 };
 
-// CORS configuration
-const corsOptions = {
-  origin: process.env.ALLOWED_ORIGIN || 'https://xxristoskk.github.io',
-  methods: ['POST', 'GET'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  maxAge: 86400 // 24 hours
-};
+module.exports = async (req, res) => {
+  // Set CORS headers
+  res.setHeader('Access-Control-Allow-Origin', process.env.ALLOWED_ORIGIN || 'https://xxristoskk.github.io');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  
+  // Handle OPTIONS request for CORS preflight
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
 
-app.use(cors(corsOptions));
-app.use(express.json());
-app.use(rateLimiter);
+  // Only allow POST requests
+  if (req.method !== 'POST') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
 
-// Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'OK',
-    timestamp: new Date().toISOString()
-  });
-});
-
-// DeepSeek chat endpoint
-app.post('/api/chat', async (req, res) => {
   try {
+    // Check rate limit
+    if (!checkRateLimit(req.headers['x-forwarded-for'] || req.socket.remoteAddress)) {
+      return res.status(429).json({ error: 'Too many requests. Please try again later.' });
+    }
+
     const { messages, temperature = 0.7, max_tokens = 2000 } = req.body;
 
     if (!messages || !Array.isArray(messages)) {
@@ -101,7 +94,6 @@ app.post('/api/chat', async (req, res) => {
   } catch (error) {
     console.error('Error:', error.response?.data || error.message);
     
-    // Handle different types of errors
     if (error.response) {
       // The request was made and the server responded with a status code
       res.status(error.response.status).json({
@@ -123,7 +115,4 @@ app.post('/api/chat', async (req, res) => {
       });
     }
   }
-});
-
-// Export for Vercel
-module.exports = app; 
+}; 
